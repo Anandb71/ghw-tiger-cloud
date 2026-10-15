@@ -1,0 +1,9 @@
+MCP tools: db_query, db_schema, feedback, search_docs, service_create, service_delete, service_fork, service_get, service_list, service_logs, service_metrics_available, service_metrics_details, service_metrics_series, service_rename, service_resize, service_start, service_stop, service_update_password, view_skill
+
+>>> tools/call service_list {}
+{"services":[{"created":"2026-10-15T05:51:20Z","environment":"DEV","id":"xurg4oiqpl","name":"ghw-tiger","region":"ap-south-1","resources":{"cpu":"0.5 cores","memory":"2 GB"},"status":"READY","type":"TIMESCALEDB"}]}
+
+>>> tools/call db_query {"service_id": "xurg4oiqpl", "query": "SELECT (SELECT count(*) FROM conditions) AS conditions, (SELECT count(*) FROM iot_readings) AS iot_readings, (SELECT count(*) FROM stocks_real_time) AS stocks_real_time, (SELECT count(*) FROM docs) AS docs"}
+{"execution_time":"152.4502ms","result_sets":[{"columns":[{"name":"conditions","type":"int8"},{"name":"iot_readings","type":"int8"},{"name":"stocks_real_time","type":"int8"},{"name":"docs","type":"int8"}],"command_tag":"SELECT 1","rows":[["16132","504050","691100","10"]],"rows_affected":1}]}
+
+{"execution_time":"34.6702ms","result_sets":[{"columns":[{"name":"hypertable_name","type":"name"},{"name":"num_chunks","type":"int8"}],"command_tag":"SELECT 3","rows":[["conditions","15"],["iot_readings","2"],["stocks_real_time","6"]],"rows_affected":3}]}

@@ -4,6 +4,7 @@ All scripts were run against a live Tiger Cloud service (`ghw-tiger`, AWS Mumbai
 
 | Challenge | Folder | What it does |
 |---|---|---|
+| CLI / MCP | `cli-mcp/` | Tiger CLI login with client credentials, `tiger service list`/`get`; Tiger MCP server (`tiger mcp start`) driven over JSON-RPC: `service_list` and `db_query` returning live row counts and hypertable chunks |
 | Hypertable | `hypertable/` | `conditions` hypertable (1-day chunks, segment by location), 16k weather rows across 4 Indian cities, chunk inspection, `time_bucket` daily averages |
 | IoT simulation | `iot-simulation/` | 50 simulated devices × 7 days @ 1-minute = 504,050 readings (daily temperature cycle, noise, rare spikes, battery drain, error statuses); latest-per-device, 3σ anomaly detection, error rate per site |
 | Continuous aggregates | `continuous-aggregates/` | `iot_hourly` continuous aggregate + refresh policy (every 30 min) + real-time aggregation, queried and EXPLAINed |

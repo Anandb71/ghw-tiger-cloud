@@ -1,0 +1,37 @@
+$ tiger auth status
+┌─────────────────┬────────────────────────────────────┐
+│    PROPERTY     │               VALUE                │
+├─────────────────┼────────────────────────────────────┤
+│ Status          │ Logged in                          │
+│ Credential Name │ tiger-cloud-credentials-23177      │
+│ Public Key      │ 01M4Z38X…(masked)         │
+│ Created At      │ 2026-10-15 06:16:28 UTC            │
+│ Project         │ New Project (fiu1n63x2d)           │
+│ Plan Type       │ Performance                        │
+│ Issuing User    │ Anand Biju (anandbiju71@gmail.com) │
+└─────────────────┴────────────────────────────────────┘
+
+$ tiger service list
+┌────────────┬───────────┬────────┬─────────────┬────────────┬──────────────────┐
+│ SERVICE ID │   NAME    │ STATUS │    TYPE     │   REGION   │     CREATED      │
+├────────────┼───────────┼────────┼─────────────┼────────────┼──────────────────┤
+│ xurg4oiqpl │ ghw-tiger │ READY  │ TIMESCALEDB │ ap-south-1 │ 2026-10-15 05:51 │
+└────────────┴───────────┴────────┴─────────────┴────────────┴──────────────────┘
+
+$ tiger service get xurg4oiqpl
+┌───────────────────┬──────────────────────────────────────────────────────────────────────────────────────────────────┐
+│     PROPERTY      │                                              VALUE                                               │
+├───────────────────┼──────────────────────────────────────────────────────────────────────────────────────────────────┤
+│ Service ID        │ xurg4oiqpl                                                                                       │
+│ Name              │ ghw-tiger                                                                                        │
+│ Status            │ READY                                                                                            │
+│ Type              │ TIMESCALEDB                                                                                      │
+│ Region            │ ap-south-1                                                                                       │
+│ Environment       │ DEV                                                                                              │
+│ CPU               │ 0.5 cores (500m)                                                                                 │
+│ Memory            │ 2 GB                                                                                             │
+│ Direct Endpoint   │ xurg4oiqpl.fiu1n63x2d.tsdb.cloud.timescale.com:38967                                             │
+│ Created           │ 2026-10-15 05:51:20 UTC                                                                          │
+│ Connection String │ postgresql://tsdbadmin@xurg4oiqpl.fiu1n63x2d.tsdb.cloud.timescale.com:38967/tsdb?sslmode=require │
+│ Console URL       │ https://console.cloud.tigerdata.com/dashboard/services/xurg4oiqpl                                │
+└───────────────────┴──────────────────────────────────────────────────────────────────────────────────────────────────┘
