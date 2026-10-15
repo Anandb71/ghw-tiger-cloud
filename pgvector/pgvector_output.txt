@@ -1,35 +1,115 @@
--- Challenge: pgvector semantic search
-=> CREATE EXTENSION IF NOT EXISTS vector;
+-- Challenge: pgvector + pgvectorscale on a hypertable of real, timestamped Hacker News headlines
+=> CREATE EXTENSION IF NOT EXISTS vectorscale CASCADE;
 CREATE EXTENSION
+=> SELECT extname, extversion FROM pg_extension WHERE extname IN ('vector','vectorscale','timescaledb') ORDER BY 1;
+extname     | extversion
+------------+-----------
+timescaledb | 2.30.2
+vector      | 0.8.7
+vectorscale | 0.9.0
+(3 rows)
+
 => DROP TABLE IF EXISTS docs;
 DROP TABLE
-=> CREATE TABLE docs (id SERIAL PRIMARY KEY, title TEXT, body TEXT, embedding vector(384));
+=> DROP TABLE IF EXISTS headlines;
+DROP TABLE
+=> CREATE TABLE headlines (
+  time      TIMESTAMPTZ NOT NULL,
+  source    TEXT NOT NULL,
+  category  TEXT NOT NULL,
+  title     TEXT NOT NULL,
+  embedding vector(384) NOT NULL
+) WITH (tsdb.hypertable, tsdb.partition_column='time', tsdb.chunk_interval='7 days');
 CREATE TABLE
-=> \copy docs (title, body, embedding) FROM 'docs.csv' WITH (FORMAT csv, HEADER true)
-COPY done in 0.1s
+=> \copy headlines (time, source, category, title, embedding) FROM 'headlines.csv' WITH (FORMAT csv, HEADER true)
+COPY done in 1.3s
 
-=> CREATE INDEX ON docs USING hnsw (embedding vector_cosine_ops);
+=> CREATE INDEX headlines_embedding_diskann ON headlines USING diskann (embedding vector_cosine_ops);
 CREATE INDEX
-=> SELECT extname, extversion FROM pg_extension WHERE extname='vector';
-extname | extversion
---------+-----------
-vector  | 0.8.7
+=> SELECT count(*) AS headlines, count(DISTINCT source) AS sources, min(time)::date AS first_day, max(time)::date AS last_day, (SELECT vector_dims(embedding) FROM headlines LIMIT 1) AS dims FROM headlines;
+headlines | sources | first_day  | last_day   | dims
+----------+---------+------------+------------+-----
+446       | 286     | 2026-09-03 | 2026-10-14 | 384
 (1 row)
 
-=> SELECT count(*) docs, vector_dims(embedding) dims FROM docs GROUP BY 2;
-docs | dims
------+-----
-10   | 384
-(1 row)
-
-=> SELECT id, title, round((1 - (embedding <=> :'q'::vector))::numeric,4) cosine_sim
-FROM docs ORDER BY embedding <=> :'q'::vector LIMIT 5;
-id | title              | cosine_sim
----+--------------------+-----------
-4  | pgvector           | 0.5899
-3  | Compression        | 0.0923
-1  | Hypertables        | 0.0817
-8  | Kerala food        | 0.0601
-10 | Retention policies | 0.0123
+=> SELECT category, count(*) FROM headlines GROUP BY 1 ORDER BY 1;
+category  | count
+----------+------
+ai        | 96
+crypto    | 50
+databases | 136
+security  | 72
+space     | 92
 (5 rows)
+
+=> SELECT hypertable_name, num_chunks FROM timescaledb_information.hypertables WHERE hypertable_name='headlines';
+hypertable_name | num_chunks
+----------------+-----------
+headlines       | 6
+(1 row)
+
+=> SELECT indexname, indexdef FROM pg_indexes WHERE indexname LIKE 'headlines_embedding%';
+indexname                   | indexdef
+----------------------------+---------------------------------------------------------------------------------------
+headlines_embedding_diskann | CREATE INDEX headlines_embedding_diskann ON public.headlines USING diskann (embedding)
+(1 row)
+
+-- Q1 "large language model agents writing code" | cosine distance <=> | last 14 days, category ai
+=> SELECT time::date, source, left(title,70) AS title, round((embedding <=> :'q1'::vector)::numeric,4) AS cosine_dist
+FROM headlines WHERE category='ai' AND time > now() - interval '14 days'
+ORDER BY embedding <=> :'q1'::vector LIMIT 5;
+time       | source          | title                                                                  | cosine_dist
+-----------+-----------------+------------------------------------------------------------------------+------------
+2026-10-12 | arstechnica.com | AI coding agents generate more code, but not more software             | 0.4104
+2026-10-06 | openai.com      | Sharing AI progress in mathematics                                     | 0.6569
+2026-10-09 | github.com      | Show HN: Let your AI agents paint big arrows, boxes and text on your s | 0.6609
+2026-10-07 | rswebsols.com   | Meta and Microsoft take steps to reduce employee usage of Claude AI    | 0.6653
+2026-10-09 | codeberg.org    | open-slopware - Alternatives to FOSS projects choosing to use LLMs/AI  | 0.6664
+(5 rows)
+
+-- Q2 "hackers exploit a critical vulnerability" | L2 distance <-> | Sep 15 - Oct 5, category security
+=> SELECT time::date, source, left(title,70) AS title, round((embedding <-> :'q2'::vector)::numeric,4) AS l2_dist
+FROM headlines WHERE category='security' AND time BETWEEN '2026-09-15' AND '2026-10-05'
+ORDER BY embedding <-> :'q2'::vector LIMIT 5;
+time       | source                     | title                                                                  | l2_dist
+-----------+----------------------------+------------------------------------------------------------------------+--------
+2026-09-23 | radicle.dev                | Radicle: Disclosure of Vulnerability in the Network Protocol           | 1.0250
+2026-09-17 | air.security               | Plugin4Shell - Zero Click RCE Vulnerability found in top four coding a | 1.0588
+2026-10-01 | lwn.net                    | Several vulnerabilities have been discovered in the Linux kernel       | 1.0634
+2026-09-24 | securitylabs.datadoghq.com | Discovering and exploiting a remote code execution vulnerability in Op | 1.0665
+2026-09-29 | casco.com                  | Every model (incl. Jev) we tested inflates security finding severity   | 1.0777
+(5 rows)
+
+-- Q3 "rocket launch to the moon" | negative inner product <#> | last 30 days, any category, excluding source github.com
+=> SELECT time::date, category, source, left(title,60) AS title, round((-(embedding <#> :'q3'::vector))::numeric,4) AS inner_product
+FROM headlines WHERE time > now() - interval '30 days' AND source <> 'github.com'
+ORDER BY embedding <#> :'q3'::vector LIMIT 5;
+time       | category | source            | title                                                        | inner_product
+-----------+----------+-------------------+--------------------------------------------------------------+--------------
+2026-10-12 | space    | universetoday.com | The Moon Mission That's a High-Tech Cave Hunt                | 0.4282
+2026-09-28 | space    | space.com         | SpaceX's Starship launching to orbit for first time ever tod | 0.4041
+2026-09-19 | space    | newsroom.usra.edu | NASA-IBM Lunar Foundation open-Source Geospatial AI Model    | 0.3927
+2026-10-12 | space    | universetoday.com | Lunar Mission Will Explore Old Lava Tubes as Potential Habit | 0.3908
+2026-09-18 | space    | cbc.ca            | NASA satellite discovers a new crater on the moon bigger tha | 0.3678
+(5 rows)
+
+-- index use for the filtered cosine query
+=> EXPLAIN (COSTS OFF) SELECT title FROM headlines WHERE time > now() - interval '14 days' ORDER BY embedding <=> :'q1'::vector LIMIT 5;
+QUERY PLAN
+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+Limit
+  ->  Result
+        ->  Custom Scan (ConstraintAwareAppend)
+              Hypertable: headlines
+              Chunks excluded during startup: 0
+              ->  Merge Append
+                    Sort Key: ((headlines.embedding <=> '<query embedding>'::vector))
+                    ->  Index Scan using _hyper_9_44_chunk_headlines_embedding_diskann on _hyper_9_44_chunk
+                          Order By: (embedding <=> '<query embedding>'::vector)
+                          Filter: ("time" > (now() - '14 days'::interval))
+                    ->  Index Scan using _hyper_9_45_chunk_headlines_embedding_diskann on _hyper_9_45_chunk
+                          Order By: (embedding <=> '<query embedding>'::vector)
+                          Filter: ("time" > (now() - '14 days'::interval))
+Allocated Memory: allocated_by_plan=212kB base_allocation=7541kB
+(14 rows)
 

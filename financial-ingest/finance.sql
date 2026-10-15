@@ -1,18 +1,13 @@
--- Challenge: Financial data ingest (tick data via COPY + OHLCV candlesticks)
-DROP MATERIALIZED VIEW IF EXISTS stock_candlestick_daily CASCADE; DROP TABLE IF EXISTS stocks_real_time CASCADE; DROP TABLE IF EXISTS company;
-CREATE TABLE company (symbol TEXT PRIMARY KEY, name TEXT);
-INSERT INTO company VALUES ('RELIANCE','Reliance Industries'),('TCS','Tata Consultancy Services'),
- ('INFY','Infosys'),('HDFCBANK','HDFC Bank'),('AAPL','Apple Inc.'),('NVDA','NVIDIA Corp.');
-CREATE TABLE stocks_real_time (time TIMESTAMPTZ NOT NULL, symbol TEXT NOT NULL, price DOUBLE PRECISION, day_volume BIGINT)
- WITH (tsdb.hypertable, tsdb.partition_column='time', tsdb.segmentby='symbol');
-\copy stocks_real_time FROM 'ticks.csv' WITH (FORMAT csv, HEADER true)
-SELECT count(*) ticks, count(DISTINCT symbol) symbols, min(time), max(time) FROM stocks_real_time;
-CREATE MATERIALIZED VIEW stock_candlestick_daily WITH (timescaledb.continuous) AS
-SELECT time_bucket('1 day', time) AS bucket_day, symbol, first(price,time) open, max(price) high, min(price) low,
-       last(price,time) close, last(day_volume,time) volume
-FROM stocks_real_time GROUP BY 1,2;
-SELECT bucket_day::date AS day, symbol, round(open::numeric,2) open, round(high::numeric,2) high, round(low::numeric,2) low,
-       round(close::numeric,2) close, volume FROM stock_candlestick_daily WHERE symbol='RELIANCE' ORDER BY bucket_day DESC LIMIT 7;
--- daily return % per symbol, last day
-SELECT symbol, c.name, round((100*(last(price,time)/first(price,time)-1))::numeric,2) pct_change_30d
-FROM stocks_real_time JOIN company c USING (symbol) GROUP BY 1,2 ORDER BY 3 DESC;
+-- Challenge: Financial data ingest (live crypto prices from Binance, polled every 2s by crypto_pipeline.py)
+SELECT hypertable_name, num_chunks FROM timescaledb_information.hypertables WHERE hypertable_name='crypto_ticks';
+SELECT symbol, count(*) ticks, min(time) first_tick, max(time) last_tick FROM crypto_ticks GROUP BY 1 ORDER BY 1;
+DROP MATERIALIZED VIEW IF EXISTS crypto_ohlcv_1m CASCADE;
+CREATE MATERIALIZED VIEW crypto_ohlcv_1m WITH (timescaledb.continuous) AS
+SELECT time_bucket('1 minute', time) AS bucket, symbol,
+       first(price, time) AS open, max(price) AS high, min(price) AS low, last(price, time) AS close, count(*) AS ticks
+FROM crypto_ticks GROUP BY 1, 2 WITH NO DATA;
+CALL refresh_continuous_aggregate('crypto_ohlcv_1m', NULL, NULL);
+SELECT add_continuous_aggregate_policy('crypto_ohlcv_1m', start_offset => INTERVAL '1 hour', end_offset => INTERVAL '1 minute', schedule_interval => INTERVAL '1 minute');
+ALTER MATERIALIZED VIEW crypto_ohlcv_1m SET (timescaledb.materialized_only = false);
+SELECT bucket AT TIME ZONE 'Asia/Kolkata' AS bucket_ist, open, high, low, close, ticks FROM crypto_ohlcv_1m WHERE symbol='BTCUSDT' ORDER BY bucket;
+SELECT symbol, round(100*(last(close,bucket)/first(open,bucket)-1),4) AS pct_change, sum(ticks) ticks FROM crypto_ohlcv_1m GROUP BY 1 ORDER BY 2 DESC;

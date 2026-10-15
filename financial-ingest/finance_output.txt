@@ -1,51 +1,61 @@
--- Challenge: Financial data ingest (tick data via COPY + OHLCV candlesticks)
-=> DROP MATERIALIZED VIEW IF EXISTS stock_candlestick_daily CASCADE; DROP TABLE IF EXISTS stocks_real_time CASCADE; DROP TABLE IF EXISTS company;
-DROP MATERIALIZED VIEW
-=> CREATE TABLE company (symbol TEXT PRIMARY KEY, name TEXT);
-CREATE TABLE
-=> INSERT INTO company VALUES ('RELIANCE','Reliance Industries'),('TCS','Tata Consultancy Services'),
- ('INFY','Infosys'),('HDFCBANK','HDFC Bank'),('AAPL','Apple Inc.'),('NVDA','NVIDIA Corp.');
-INSERT 0 6
-=> CREATE TABLE stocks_real_time (time TIMESTAMPTZ NOT NULL, symbol TEXT NOT NULL, price DOUBLE PRECISION, day_volume BIGINT)
- WITH (tsdb.hypertable, tsdb.partition_column='time', tsdb.segmentby='symbol');
-CREATE TABLE
-=> \copy stocks_real_time FROM 'ticks.csv' WITH (FORMAT csv, HEADER true)
-COPY done in 22.8s
-
-=> SELECT count(*) ticks, count(DISTINCT symbol) symbols, min(time), max(time) FROM stocks_real_time;
-ticks  | symbols | min                       | max
--------+---------+---------------------------+--------------------------
-691100 | 6       | 2026-09-15 06:12:06+00:00 | 2026-10-15 06:12:19+00:00
+-- Challenge: Financial data ingest (live crypto prices from Binance, polled every 2s by crypto_pipeline.py)
+=> SELECT hypertable_name, num_chunks FROM timescaledb_information.hypertables WHERE hypertable_name='crypto_ticks';
+hypertable_name | num_chunks
+----------------+-----------
+crypto_ticks    | 1
 (1 row)
 
-=> CREATE MATERIALIZED VIEW stock_candlestick_daily WITH (timescaledb.continuous) AS
-SELECT time_bucket('1 day', time) AS bucket_day, symbol, first(price,time) open, max(price) high, min(price) low,
-       last(price,time) close, last(day_volume,time) volume
-FROM stocks_real_time GROUP BY 1,2;
-CREATE MATERIALIZED VIEW
-=> SELECT bucket_day::date AS day, symbol, round(open::numeric,2) open, round(high::numeric,2) high, round(low::numeric,2) low,
-       round(close::numeric,2) close, volume FROM stock_candlestick_daily WHERE symbol='RELIANCE' ORDER BY bucket_day DESC LIMIT 7;
-day        | symbol   | open    | high    | low     | close   | volume
------------+----------+---------+---------+---------+---------+--------
-2026-10-15 | RELIANCE | 4905.91 | 4914.63 | 4635.82 | 4740.45 | 1028117
-2026-10-14 | RELIANCE | 4752.86 | 4967.31 | 4685.62 | 4909.58 | 3911388
-2026-10-13 | RELIANCE | 5187.86 | 5254.11 | 4736.30 | 4749.93 | 3820743
-2026-10-12 | RELIANCE | 5379.65 | 5440.25 | 5104.88 | 5180.60 | 3896726
-2026-10-11 | RELIANCE | 6020.12 | 6138.01 | 5264.63 | 5373.23 | 3847037
-2026-10-10 | RELIANCE | 6011.79 | 6489.00 | 5930.44 | 6007.96 | 3829135
-2026-10-09 | RELIANCE | 6363.85 | 6442.98 | 5799.09 | 6020.31 | 3827946
-(7 rows)
+=> SELECT symbol, count(*) ticks, min(time) first_tick, max(time) last_tick FROM crypto_ticks GROUP BY 1 ORDER BY 1;
+symbol   | ticks | first_tick                       | last_tick
+---------+-------+----------------------------------+---------------------------------
+BNBUSDT  | 270   | 2026-10-15 06:22:25.246813+00:00 | 2026-10-15 06:31:23.106399+00:00
+BTCUSDT  | 270   | 2026-10-15 06:22:25.246813+00:00 | 2026-10-15 06:31:23.106399+00:00
+DOGEUSDT | 270   | 2026-10-15 06:22:25.246813+00:00 | 2026-10-15 06:31:23.106399+00:00
+ETHUSDT  | 270   | 2026-10-15 06:22:25.246813+00:00 | 2026-10-15 06:31:23.106399+00:00
+SOLUSDT  | 270   | 2026-10-15 06:22:25.246813+00:00 | 2026-10-15 06:31:23.106399+00:00
+XRPUSDT  | 270   | 2026-10-15 06:22:25.246813+00:00 | 2026-10-15 06:31:23.106399+00:00
+(6 rows)
 
--- daily return % per symbol, last day
-=> SELECT symbol, c.name, round((100*(last(price,time)/first(price,time)-1))::numeric,2) pct_change_30d
-FROM stocks_real_time JOIN company c USING (symbol) GROUP BY 1,2 ORDER BY 3 DESC;
-symbol   | name                      | pct_change_30d
----------+---------------------------+---------------
-RELIANCE | Reliance Industries       | 63.73
-AAPL     | Apple Inc.                | 57.88
-HDFCBANK | HDFC Bank                 | 46.22
-TCS      | Tata Consultancy Services | 44.01
-INFY     | Infosys                   | 9.29
-NVDA     | NVIDIA Corp.              | -9.92
+=> DROP MATERIALIZED VIEW IF EXISTS crypto_ohlcv_1m CASCADE;
+DROP MATERIALIZED VIEW
+=> CREATE MATERIALIZED VIEW crypto_ohlcv_1m WITH (timescaledb.continuous) AS
+SELECT time_bucket('1 minute', time) AS bucket, symbol,
+       first(price, time) AS open, max(price) AS high, min(price) AS low, last(price, time) AS close, count(*) AS ticks
+FROM crypto_ticks GROUP BY 1, 2 WITH NO DATA;
+CREATE MATERIALIZED VIEW
+=> CALL refresh_continuous_aggregate('crypto_ohlcv_1m', NULL, NULL);
+CALL
+=> SELECT add_continuous_aggregate_policy('crypto_ohlcv_1m', start_offset => INTERVAL '1 hour', end_offset => INTERVAL '1 minute', schedule_interval => INTERVAL '1 minute');
+add_continuous_aggregate_policy
+-------------------------------
+1009
+(1 row)
+
+=> ALTER MATERIALIZED VIEW crypto_ohlcv_1m SET (timescaledb.materialized_only = false);
+ALTER MATERIALIZED VIEW
+=> SELECT bucket AT TIME ZONE 'Asia/Kolkata' AS bucket_ist, open, high, low, close, ticks FROM crypto_ohlcv_1m WHERE symbol='BTCUSDT' ORDER BY bucket;
+bucket_ist          | open           | high           | low            | close          | ticks
+--------------------+----------------+----------------+----------------+----------------+------
+2026-10-15 11:52:00 | 80863.35000000 | 80863.35000000 | 80821.57000000 | 80821.57000000 | 18
+2026-10-15 11:53:00 | 80818.60000000 | 80828.60000000 | 80773.60000000 | 80775.00000000 | 30
+2026-10-15 11:54:00 | 80778.43000000 | 80805.06000000 | 80772.51000000 | 80805.06000000 | 30
+2026-10-15 11:55:00 | 80805.06000000 | 80863.66000000 | 80800.75000000 | 80852.28000000 | 30
+2026-10-15 11:56:00 | 80838.05000000 | 80890.09000000 | 80838.05000000 | 80890.09000000 | 30
+2026-10-15 11:57:00 | 80899.61000000 | 80924.99000000 | 80899.61000000 | 80910.67000000 | 30
+2026-10-15 11:58:00 | 80910.67000000 | 80952.00000000 | 80910.66000000 | 80952.00000000 | 30
+2026-10-15 11:59:00 | 80952.01000000 | 80968.01000000 | 80925.55000000 | 80968.01000000 | 30
+2026-10-15 12:00:00 | 80970.01000000 | 80980.29000000 | 80953.99000000 | 80972.00000000 | 30
+2026-10-15 12:01:00 | 80972.01000000 | 80982.01000000 | 80969.48000000 | 80969.48000000 | 12
+(10 rows)
+
+=> SELECT symbol, round(100*(last(close,bucket)/first(open,bucket)-1),4) AS pct_change, sum(ticks) ticks FROM crypto_ohlcv_1m GROUP BY 1 ORDER BY 2 DESC;
+symbol   | pct_change | ticks
+---------+------------+------
+DOGEUSDT | 0.3903     | 270
+XRPUSDT  | 0.2994     | 270
+BNBUSDT  | 0.1368     | 270
+BTCUSDT  | 0.1312     | 270
+ETHUSDT  | 0.1021     | 270
+SOLUSDT  | 0.0882     | 270
 (6 rows)
 
