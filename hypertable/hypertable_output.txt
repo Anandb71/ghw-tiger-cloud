@@ -1,0 +1,54 @@
+-- Challenge: Hypertable
+=> DROP TABLE IF EXISTS conditions CASCADE;
+DROP TABLE
+=> CREATE TABLE conditions (
+  time        TIMESTAMPTZ NOT NULL,
+  location    TEXT        NOT NULL,
+  temperature DOUBLE PRECISION,
+  humidity    DOUBLE PRECISION
+) WITH (tsdb.hypertable, tsdb.partition_column='time', tsdb.segmentby='location', tsdb.chunk_interval='1 day');
+CREATE TABLE
+=> INSERT INTO conditions
+SELECT t, loc,
+       24 + 6*sin(extract(epoch FROM t)/86400*2*pi()) + random()*2,
+       55 + 15*cos(extract(epoch FROM t)/86400*2*pi()) + random()*5
+FROM generate_series(now() - interval '14 days', now(), interval '5 minutes') t,
+     unnest(ARRAY['mumbai','kochi','bengaluru','delhi']) loc;
+INSERT 0 16132
+=> SELECT hypertable_name, num_dimensions, num_chunks, compression_enabled
+FROM timescaledb_information.hypertables WHERE hypertable_name='conditions';
+hypertable_name | num_dimensions | num_chunks | compression_enabled
+----------------+----------------+------------+--------------------
+conditions      | 1              | 15         | True
+(1 row)
+
+=> SELECT count(*) AS rows, min(time), max(time) FROM conditions;
+rows  | min                              | max
+------+----------------------------------+---------------------------------
+16132 | 2026-10-01 06:09:40.014534+00:00 | 2026-10-15 06:09:40.014534+00:00
+(1 row)
+
+=> SELECT chunk_name, range_start, range_end FROM timescaledb_information.chunks
+WHERE hypertable_name='conditions' ORDER BY range_start LIMIT 5;
+chunk_name       | range_start               | range_end
+-----------------+---------------------------+--------------------------
+_hyper_1_1_chunk | 2026-10-01 00:00:00+00:00 | 2026-10-02 00:00:00+00:00
+_hyper_1_2_chunk | 2026-10-02 00:00:00+00:00 | 2026-10-03 00:00:00+00:00
+_hyper_1_3_chunk | 2026-10-03 00:00:00+00:00 | 2026-10-04 00:00:00+00:00
+_hyper_1_4_chunk | 2026-10-04 00:00:00+00:00 | 2026-10-05 00:00:00+00:00
+_hyper_1_5_chunk | 2026-10-05 00:00:00+00:00 | 2026-10-06 00:00:00+00:00
+(5 rows)
+
+=> SELECT time_bucket('1 day', time) AS day, location, round(avg(temperature)::numeric,2) avg_temp
+FROM conditions WHERE location='mumbai' GROUP BY 1,2 ORDER BY 1 DESC LIMIT 7;
+day                       | location | avg_temp
+--------------------------+----------+---------
+2026-10-15 00:00:00+00:00 | mumbai   | 28.96
+2026-10-14 00:00:00+00:00 | mumbai   | 24.96
+2026-10-13 00:00:00+00:00 | mumbai   | 24.99
+2026-10-12 00:00:00+00:00 | mumbai   | 25.02
+2026-10-11 00:00:00+00:00 | mumbai   | 25.04
+2026-10-10 00:00:00+00:00 | mumbai   | 25.01
+2026-10-09 00:00:00+00:00 | mumbai   | 25.06
+(7 rows)
+

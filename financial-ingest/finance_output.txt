@@ -1,0 +1,51 @@
+-- Challenge: Financial data ingest (tick data via COPY + OHLCV candlesticks)
+=> DROP MATERIALIZED VIEW IF EXISTS stock_candlestick_daily CASCADE; DROP TABLE IF EXISTS stocks_real_time CASCADE; DROP TABLE IF EXISTS company;
+DROP MATERIALIZED VIEW
+=> CREATE TABLE company (symbol TEXT PRIMARY KEY, name TEXT);
+CREATE TABLE
+=> INSERT INTO company VALUES ('RELIANCE','Reliance Industries'),('TCS','Tata Consultancy Services'),
+ ('INFY','Infosys'),('HDFCBANK','HDFC Bank'),('AAPL','Apple Inc.'),('NVDA','NVIDIA Corp.');
+INSERT 0 6
+=> CREATE TABLE stocks_real_time (time TIMESTAMPTZ NOT NULL, symbol TEXT NOT NULL, price DOUBLE PRECISION, day_volume BIGINT)
+ WITH (tsdb.hypertable, tsdb.partition_column='time', tsdb.segmentby='symbol');
+CREATE TABLE
+=> \copy stocks_real_time FROM 'ticks.csv' WITH (FORMAT csv, HEADER true)
+COPY done in 22.8s
+
+=> SELECT count(*) ticks, count(DISTINCT symbol) symbols, min(time), max(time) FROM stocks_real_time;
+ticks  | symbols | min                       | max
+-------+---------+---------------------------+--------------------------
+691100 | 6       | 2026-09-15 06:12:06+00:00 | 2026-10-15 06:12:19+00:00
+(1 row)
+
+=> CREATE MATERIALIZED VIEW stock_candlestick_daily WITH (timescaledb.continuous) AS
+SELECT time_bucket('1 day', time) AS bucket_day, symbol, first(price,time) open, max(price) high, min(price) low,
+       last(price,time) close, last(day_volume,time) volume
+FROM stocks_real_time GROUP BY 1,2;
+CREATE MATERIALIZED VIEW
+=> SELECT bucket_day::date AS day, symbol, round(open::numeric,2) open, round(high::numeric,2) high, round(low::numeric,2) low,
+       round(close::numeric,2) close, volume FROM stock_candlestick_daily WHERE symbol='RELIANCE' ORDER BY bucket_day DESC LIMIT 7;
+day        | symbol   | open    | high    | low     | close   | volume
+-----------+----------+---------+---------+---------+---------+--------
+2026-10-15 | RELIANCE | 4905.91 | 4914.63 | 4635.82 | 4740.45 | 1028117
+2026-10-14 | RELIANCE | 4752.86 | 4967.31 | 4685.62 | 4909.58 | 3911388
+2026-10-13 | RELIANCE | 5187.86 | 5254.11 | 4736.30 | 4749.93 | 3820743
+2026-10-12 | RELIANCE | 5379.65 | 5440.25 | 5104.88 | 5180.60 | 3896726
+2026-10-11 | RELIANCE | 6020.12 | 6138.01 | 5264.63 | 5373.23 | 3847037
+2026-10-10 | RELIANCE | 6011.79 | 6489.00 | 5930.44 | 6007.96 | 3829135
+2026-10-09 | RELIANCE | 6363.85 | 6442.98 | 5799.09 | 6020.31 | 3827946
+(7 rows)
+
+-- daily return % per symbol, last day
+=> SELECT symbol, c.name, round((100*(last(price,time)/first(price,time)-1))::numeric,2) pct_change_30d
+FROM stocks_real_time JOIN company c USING (symbol) GROUP BY 1,2 ORDER BY 3 DESC;
+symbol   | name                      | pct_change_30d
+---------+---------------------------+---------------
+RELIANCE | Reliance Industries       | 63.73
+AAPL     | Apple Inc.                | 57.88
+HDFCBANK | HDFC Bank                 | 46.22
+TCS      | Tata Consultancy Services | 44.01
+INFY     | Infosys                   | 9.29
+NVDA     | NVIDIA Corp.              | -9.92
+(6 rows)
+

@@ -1,0 +1,89 @@
+-- Challenge: Continuous Aggregates (on iot_readings)
+=> DROP MATERIALIZED VIEW IF EXISTS iot_hourly CASCADE;
+DROP MATERIALIZED VIEW
+=> CREATE MATERIALIZED VIEW iot_hourly WITH (timescaledb.continuous) AS
+SELECT time_bucket('1 hour', time) AS bucket, device_id,
+       avg(temperature) avg_temp, max(temperature) max_temp, min(battery) min_battery, count(*) n
+FROM iot_readings GROUP BY 1,2 WITH NO DATA;
+CREATE MATERIALIZED VIEW
+=> SELECT add_continuous_aggregate_policy('iot_hourly', start_offset => INTERVAL '3 days',
+  end_offset => INTERVAL '1 hour', schedule_interval => INTERVAL '30 minutes');
+add_continuous_aggregate_policy
+-------------------------------
+1003
+(1 row)
+
+=> CALL refresh_continuous_aggregate('iot_hourly', NULL, now() - interval '1 hour');
+CALL
+=> ALTER MATERIALIZED VIEW iot_hourly SET (timescaledb.materialized_only = false); -- real-time aggregation
+ALTER MATERIALIZED VIEW
+=> SELECT view_name, materialized_only FROM timescaledb_information.continuous_aggregates;
+view_name  | materialized_only
+-----------+------------------
+iot_hourly | False
+(1 row)
+
+=> SELECT job_id, proc_name, schedule_interval FROM timescaledb_information.jobs WHERE proc_name LIKE '%continuous%';
+job_id | proc_name                           | schedule_interval
+-------+-------------------------------------+------------------
+1003   | policy_refresh_continuous_aggregate | 0:30:00
+(1 row)
+
+=> SELECT bucket, device_id, round(avg_temp::numeric,2) avg_temp, round(max_temp::numeric,2) max_temp, n
+FROM iot_hourly WHERE device_id=1 ORDER BY bucket DESC LIMIT 8;
+bucket                    | device_id | avg_temp | max_temp | n
+--------------------------+-----------+----------+----------+---
+2026-10-15 06:00:00+00:00 | 1         | 25.87    | 26.56    | 10
+2026-10-15 05:00:00+00:00 | 1         | 26.00    | 26.70    | 60
+2026-10-15 04:00:00+00:00 | 1         | 25.57    | 26.51    | 60
+2026-10-15 03:00:00+00:00 | 1         | 25.05    | 26.08    | 60
+2026-10-15 02:00:00+00:00 | 1         | 23.93    | 24.92    | 60
+2026-10-15 01:00:00+00:00 | 1         | 22.89    | 23.92    | 60
+2026-10-15 00:00:00+00:00 | 1         | 21.72    | 22.90    | 60
+2026-10-14 23:00:00+00:00 | 1         | 20.34    | 21.35    | 60
+(8 rows)
+
+=> EXPLAIN (ANALYZE, TIMING OFF) SELECT device_id, avg(avg_temp) FROM iot_hourly GROUP BY 1;
+QUERY PLAN
+------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+HashAggregate  (cost=675.99..678.49 rows=200 width=12) (actual rows=50.00 loops=1)
+  Group Key: "*SELECT* 1".device_id
+  Batches: 1  Memory Usage: 32kB
+  Buffers: shared hit=178
+  ->  Append  (cost=33.35..653.89 rows=4421 width=12) (actual rows=8450.00 loops=1)
+        Buffers: shared hit=178
+        ->  Subquery Scan on "*SELECT* 1"  (cost=33.35..209.07 rows=2976 width=12) (actual rows=8350.00 loops=1)
+              Buffers: shared hit=91
+              ->  Result  (cost=33.35..179.31 rows=2976 width=44) (actual rows=8350.00 loops=1)
+                    Buffers: shared hit=91
+                    ->  Bitmap Heap Scan on _hyper_3_18_chunk  (cost=33.35..149.55 rows=2976 width=12) (actual rows=8350.00 loops=1)
+                          Recheck Cond: (bucket < '2026-10-15 05:00:00+00'::timestamp with time zone)
+                          Heap Blocks: exact=79
+                          Buffers: shared hit=91
+                          ->  Bitmap Index Scan on _hyper_3_18_chunk__materialized_hypertable_3_bucket_idx  (cost=0.00..32.60 rows=2976 width=0) (actual rows=8350.00 loops=1)
+                                Index Cond: (bucket < '2026-10-15 05:00:00+00'::timestamp with time zone)
+                                Index Searches: 1
+                                Buffers: shared hit=12
+        ->  Subquery Scan on "*SELECT* 2"  (cost=386.59..422.72 rows=1445 width=12) (actual rows=100.00 loops=1)
+              Buffers: shared hit=87
+              ->  HashAggregate  (cost=386.59..408.27 rows=1445 width=44) (actual rows=100.00 loops=1)
+                    Group Key: time_bucket('01:00:00'::interval, _hyper_2_17_chunk."time"), _hyper_2_17_chunk.device_id
+                    Batches: 1  Memory Usage: 65kB
+                    Buffers: shared hit=87
+                    ->  Result  (cost=54.28..349.83 rows=4902 width=20) (actual rows=3500.00 loops=1)
+                          Buffers: shared hit=87
+                          ->  Bitmap Heap Scan on _hyper_2_17_chunk  (cost=54.28..288.55 rows=4902 width=20) (actual rows=3500.00 loops=1)
+                                Recheck Cond: ("time" >= '2026-10-15 05:00:00+00'::timestamp with time zone)
+                                Heap Blocks: exact=81
+                                Buffers: shared hit=87
+                                ->  Bitmap Index Scan on _hyper_2_17_chunk_iot_readings_time_idx  (cost=0.00..53.05 rows=4902 width=0) (actual rows=3500.00 loops=1)
+                                      Index Cond: ("time" >= '2026-10-15 05:00:00+00'::timestamp with time zone)
+                                      Index Searches: 1
+                                      Buffers: shared hit=6
+Planning:
+  Buffers: shared hit=28
+Planning Time: 0.493 ms
+Execution Time: 4.330 ms
+Allocated Memory: allocated_by_plan=436kB allocated_by_exec=356kB base_allocation=3827kB
+(39 rows)
+

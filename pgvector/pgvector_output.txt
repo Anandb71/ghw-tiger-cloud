@@ -1,0 +1,35 @@
+-- Challenge: pgvector semantic search
+=> CREATE EXTENSION IF NOT EXISTS vector;
+CREATE EXTENSION
+=> DROP TABLE IF EXISTS docs;
+DROP TABLE
+=> CREATE TABLE docs (id SERIAL PRIMARY KEY, title TEXT, body TEXT, embedding vector(384));
+CREATE TABLE
+=> \copy docs (title, body, embedding) FROM 'docs.csv' WITH (FORMAT csv, HEADER true)
+COPY done in 0.1s
+
+=> CREATE INDEX ON docs USING hnsw (embedding vector_cosine_ops);
+CREATE INDEX
+=> SELECT extname, extversion FROM pg_extension WHERE extname='vector';
+extname | extversion
+--------+-----------
+vector  | 0.8.7
+(1 row)
+
+=> SELECT count(*) docs, vector_dims(embedding) dims FROM docs GROUP BY 2;
+docs | dims
+-----+-----
+10   | 384
+(1 row)
+
+=> SELECT id, title, round((1 - (embedding <=> :'q'::vector))::numeric,4) cosine_sim
+FROM docs ORDER BY embedding <=> :'q'::vector LIMIT 5;
+id | title              | cosine_sim
+---+--------------------+-----------
+4  | pgvector           | 0.5899
+3  | Compression        | 0.0923
+1  | Hypertables        | 0.0817
+8  | Kerala food        | 0.0601
+10 | Retention policies | 0.0123
+(5 rows)
+

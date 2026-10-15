@@ -1,0 +1,69 @@
+-- Challenge: IoT data simulation (50 devices, 7 days @ 1-minute)
+=> DROP TABLE IF EXISTS iot_readings CASCADE; DROP TABLE IF EXISTS devices CASCADE;
+DROP TABLE
+=> CREATE TABLE devices (device_id INT PRIMARY KEY, kind TEXT, site TEXT);
+CREATE TABLE
+=> INSERT INTO devices SELECT i, (ARRAY['thermostat','air_quality','power_meter'])[1+i%3],
+  (ARRAY['factory-a','factory-b','warehouse','office'])[1+i%4] FROM generate_series(1,50) i;
+INSERT 0 50
+=> CREATE TABLE iot_readings (
+  time TIMESTAMPTZ NOT NULL, device_id INT NOT NULL REFERENCES devices,
+  temperature DOUBLE PRECISION, humidity DOUBLE PRECISION, battery DOUBLE PRECISION, status TEXT
+) WITH (tsdb.hypertable, tsdb.partition_column='time', tsdb.segmentby='device_id');
+CREATE TABLE
+=> INSERT INTO iot_readings
+SELECT t, d,
+  20 + d%7 + 5*sin(extract(epoch FROM t)/86400*2*pi()) + (random()-0.5)*1.5
+     + CASE WHEN random() < 0.001 THEN 25 ELSE 0 END,           -- rare spikes
+  45 + 10*random(),
+  greatest(0, 100 - extract(epoch FROM (t - (now()-interval '7 days')))/86400 * (2 + d%5)),
+  CASE WHEN random() < 0.002 THEN 'error' ELSE 'ok' END
+FROM generate_series(now()-interval '7 ...
+INSERT 0 504050
+=> SELECT count(*) readings, count(DISTINCT device_id) devices FROM iot_readings;
+readings | devices
+---------+--------
+504050   | 50
+(1 row)
+
+-- latest reading per device
+=> SELECT DISTINCT ON (device_id) device_id, time, round(temperature::numeric,1) temp, round(battery::numeric,1) battery
+FROM iot_readings ORDER BY device_id, time DESC LIMIT 5;
+device_id | time                             | temp | battery
+----------+----------------------------------+------+--------
+1         | 2026-10-15 06:09:41.127431+00:00 | 26.6 | 79.0
+2         | 2026-10-15 06:09:41.127431+00:00 | 26.4 | 72.0
+3         | 2026-10-15 06:09:41.127431+00:00 | 28.2 | 65.0
+4         | 2026-10-15 06:09:41.127431+00:00 | 28.6 | 58.0
+5         | 2026-10-15 06:09:41.127431+00:00 | 29.9 | 86.0
+(5 rows)
+
+-- anomaly detection: temperature spikes > 3 sigma per device
+=> WITH s AS (SELECT device_id, avg(temperature) m, stddev(temperature) sd FROM iot_readings GROUP BY 1)
+SELECT r.time, r.device_id, round(r.temperature::numeric,1) temp
+FROM iot_readings r JOIN s USING (device_id) WHERE r.temperature > s.m + 3*s.sd ORDER BY r.time DESC LIMIT 10;
+time                             | device_id | temp
+---------------------------------+-----------+-----
+2026-10-15 05:17:41.127431+00:00 | 2         | 51.4
+2026-10-15 05:12:41.127431+00:00 | 22        | 51.5
+2026-10-15 05:06:41.127431+00:00 | 9         | 51.4
+2026-10-15 04:56:41.127431+00:00 | 25        | 53.7
+2026-10-15 04:35:41.127431+00:00 | 34        | 56.1
+2026-10-15 04:06:41.127431+00:00 | 26        | 54.9
+2026-10-15 03:56:41.127431+00:00 | 12        | 53.9
+2026-10-15 03:08:41.127431+00:00 | 15        | 49.3
+2026-10-15 03:00:41.127431+00:00 | 26        | 54.3
+2026-10-15 02:59:41.127431+00:00 | 10        | 50.9
+(10 rows)
+
+-- error rate by site
+=> SELECT d.site, count(*) FILTER (WHERE status='error') errors, round(100.0*count(*) FILTER (WHERE status='error')/count(*),3) pct
+FROM iot_readings r JOIN devices d USING (device_id) GROUP BY 1 ORDER BY 1;
+site      | errors | pct
+----------+--------+------
+factory-a | 228    | 0.188
+factory-b | 255    | 0.195
+office    | 238    | 0.197
+warehouse | 283    | 0.216
+(4 rows)
+
